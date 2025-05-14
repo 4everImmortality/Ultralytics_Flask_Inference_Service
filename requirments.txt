@@ -1,0 +1,8 @@
+Flask>=2.0
+ultralytics
+opencv-python>=4.0
+numpy>=1.20
+Django>=3.0 # Included as the project structure implies interaction or shared DB
+torch-gpu
+# Add any other specific dependencies your project might use that are not listed above.
+# For example, if you use specific Django apps or other libraries.
