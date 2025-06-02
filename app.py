@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 # Initialize processor with model path from config
-video_processor = VideoProcessor(model_path=config.MODEL_PATH)
+video_processor = VideoProcessor()
 
 # --- API Endpoints Aligned with Analyzer Class ---
 

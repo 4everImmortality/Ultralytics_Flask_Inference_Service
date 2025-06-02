@@ -13,7 +13,27 @@ logger = logging.getLogger(__name__)
 
 # Default YOLO model path
 # This should be the path to your YOLO model file (e.g., yolov8n.pt)
-MODEL_PATH = "yolov8n.pt"
+# YOLO模型配置 - 支持多个behavior使用不同模型
+BEHAVIOR_MODEL_MAP = {
+    "ZHOUJIERUQIN": "yolov8n.pt",  # 人员检测专用模型
+    "RENSHUTONGJI": "yolov8s-worldv2.pt",  # 人群计数专用模型
+    'INSULATOR': "insulator.pt",  # 绝缘子检测专用模型
+    # 添加更多behavior和对应的模型路径
+    # "NEW_BEHAVIOR": "models/yolo_new_model.pt",
+}
+# 为开放词汇模型配置检测类别
+BEHAVIOR_CLASSES_MAP = {
+    "RENSHUTONGJI": ["person"],  # 人数统计只检测人员
+    # 可以为其他behavior配置特定类别
+    # "VEHICLE_COUNT": ["car", "truck", "bus", "motorcycle"],
+    # "ANIMAL_DETECTION": ["dog", "cat", "bird"],
+}
+# 默认模型路径（当behavior没有指定模型时使用）
+DEFAULT_MODEL_PATH = "yolov8n.pt"
+
+# 原有的MODEL_PATH保持向后兼容
+MODEL_PATH = DEFAULT_MODEL_PATH
+# MODEL_PATH = "yolov8n.pt"
 
 # Configuration for SQLite Database
 # This should be the ABSOLUTE path to your SQLite database file.

@@ -4,12 +4,14 @@
 from behaviors.base_behavior import BaseBehavior
 from behaviors.zhoujieruqin import ZhouJieRuQinBehavior
 from behaviors.renshutongji import RenShuTongJiBehavior
+from behaviors.insulator import InsulatorBehavior
 
 # Map behavior codes (strings used in API requests) to their corresponding Behavior classes.
 # Add new behaviors to this dictionary.
 BEHAVIOR_MAP = {
     "ZHOUJIERUQIN": ZhouJieRuQinBehavior,
     "RENSHUTONGJI": RenShuTongJiBehavior,
+    'INSULATOR': InsulatorBehavior,
     # Add other behaviors here:
     # "NEW_BEHAVIOR_CODE": NewBehaviorClass,
 }

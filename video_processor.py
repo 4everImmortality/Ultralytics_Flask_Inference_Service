@@ -13,8 +13,8 @@ import os
 import datetime # Import standard datetime
 
 from config import (
-    MODEL_PATH, VIDEO_SAVE_DURATION_SECONDS, FRAME_QUEUE_MAXSIZE,
-    ANNOTATED_FRAME_QUEUE_MAXSIZE, THREAD_JOIN_TIMEOUT_SECONDS,
+    BEHAVIOR_MODEL_MAP, BEHAVIOR_CLASSES_MAP, DEFAULT_MODEL_PATH, VIDEO_SAVE_DURATION_SECONDS, 
+    FRAME_QUEUE_MAXSIZE, ANNOTATED_FRAME_QUEUE_MAXSIZE, THREAD_JOIN_TIMEOUT_SECONDS,
     STREAM_RECONNECT_DELAY_SECONDS, DETECTOR_QUEUE_GET_TIMEOUT,
     PUSHER_QUEUE_GET_TIMEOUT, MANAGER_CHECK_INTERVAL_SECONDS,
     DETECTOR_FPS_UPDATE_INTERVAL
@@ -32,49 +32,76 @@ class VideoProcessor:
     Handles stream pulling, object detection, behavior delegation,
     and optional stream pushing. Saves Alarm data to SQLite.
     """
-    def __init__(self, model_path=MODEL_PATH):
+    def __init__(self):
         """
         Initializes the VideoProcessor.
-
-        Args:
-            model_path (str): Path to the YOLO model file.
+        不再预加载单一模型，而是根据需要动态加载不同的模型
         """
         self.logger = logging.getLogger(self.__class__.__name__)
         self.logger.info("VideoProcessor initializing...")
-        # Load the YOLO model once when the processor is initialized
-        try:
-            self.model = YOLO(model_path)
-            logger.info(f"YOLO model loaded successfully from {model_path}")
-            self._model_loaded = True
-        except Exception as e:
-            logger.error(f"Failed to load YOLO model from {model_path}: {e}")
-            self.model = None # Handle case where model loading fails
-            self._model_loaded = False
-
+        
+        # 存储已加载的模型，避免重复加载
+        self.loaded_models = {}
+        
         # Dictionary to hold control objects for each stream
-        # Each entry contains threads, queues, events, stats, and behavior state
         self.controls = {}
         logger.info("VideoProcessor initialized.")
+
+    def _get_model_for_behavior(self, behavior_code):
+        """
+        根据behavior_code获取对应的YOLO模型，并设置检测类别
+        
+        Args:
+            behavior_code (str): 行为代码
+            
+        Returns:
+            YOLO: 对应的YOLO模型实例，如果加载失败返回None
+        """
+        # 确定使用哪个模型路径
+        model_path = BEHAVIOR_MODEL_MAP.get(behavior_code, DEFAULT_MODEL_PATH)
+        
+        # 创建包含类别信息的缓存key
+        classes = BEHAVIOR_CLASSES_MAP.get(behavior_code)
+        cache_key = f"{model_path}_{str(classes)}" if classes else model_path
+        
+        # 如果模型已经加载过，直接返回
+        if cache_key in self.loaded_models:
+            self.logger.info(f"Using cached model for behavior {behavior_code}: {model_path}")
+            return self.loaded_models[cache_key]
+        
+        # 加载新模型
+        try:
+            self.logger.info(f"Loading YOLO model for behavior {behavior_code}: {model_path}")
+            model = YOLO(model_path)
+            
+            # 如果该behavior配置了特定类别，设置模型检测类别
+            if classes:
+                self.logger.info(f"Setting model classes for behavior {behavior_code}: {classes}")
+                try:
+                    model.set_classes(classes)
+                    self.logger.info(f"Successfully set model classes: {classes}")
+                except Exception as e:
+                    self.logger.warning(f"Failed to set classes for model {model_path}: {e}")
+                    self.logger.warning("Model will use default classes")
+            
+            self.loaded_models[cache_key] = model
+            self.logger.info(f"YOLO model loaded successfully for behavior {behavior_code}")
+            return model
+        except Exception as e:
+            self.logger.error(f"Failed to load YOLO model for behavior {behavior_code} from {model_path}: {e}")
+            return None
 
     def start_detection(self, code, behavior_code, stream_url, push_stream=False, push_stream_url=None):
         """
         Start detection on a video stream with a threaded pipeline.
-
-        Args:
-            code (str): Unique code for this control instance.
-            behavior_code (str): Code specifying the detection behavior.
-            stream_url (str): URL of the video stream (e.g., RTSP, file path).
-            push_stream (bool): Whether to push the annotated stream.
-            push_stream_url (str, optional): URL to push the stream to.
-
-        Returns:
-            tuple[bool, str]: (success, message)
         """
         if code in self.controls and self.controls[code]["manager_thread"].is_alive():
             return False, f"Detection already running for code: {code}"
 
-        if not self._model_loaded or self.model is None:
-             return False, "YOLO model failed to load during processor initialization. Cannot start detection."
+        # 验证behavior并获取对应模型
+        model = self._get_model_for_behavior(behavior_code)
+        if model is None:
+            return False, f"Failed to load YOLO model for behavior: {behavior_code}"
 
         # Validate behavior code by attempting to get a handler
         if get_behavior_handler(behavior_code, code) is None:
@@ -82,16 +109,16 @@ class VideoProcessor:
 
         logger.info(f"[{code}] Attempting to start detection for stream: {stream_url} with behavior: {behavior_code}")
 
-        # Create queues and events for this stream
-        # Using the configured max sizes
-        frame_queue = queue.Queue(maxsize=FRAME_QUEUE_MAXSIZE)  # Queue for raw frames (puller -> detector)
-        annotated_frame_queue = queue.Queue(maxsize=ANNOTATED_FRAME_QUEUE_MAXSIZE) # Queue for annotated frames (detector -> pusher)
-        stop_event = threading.Event() # Event to signal threads to stop
-        error_event = threading.Event() # Event to signal an error occurred in any thread
+        # ...existing code for creating queues and events...
+        frame_queue = queue.Queue(maxsize=FRAME_QUEUE_MAXSIZE)
+        annotated_frame_queue = queue.Queue(maxsize=ANNOTATED_FRAME_QUEUE_MAXSIZE)
+        stop_event = threading.Event()
+        error_event = threading.Event()
 
-        # Initialize stats tracking and state for this control code
+        # Initialize control with behavior-specific model
         self.controls[code] = {
             "behavior_code": behavior_code,
+            "model": model,  # 为每个control分配特定的模型
             "stream_url": stream_url,
             "push_stream": push_stream,
             "push_stream_url": push_stream_url,
@@ -99,39 +126,35 @@ class VideoProcessor:
             "annotated_frame_queue": annotated_frame_queue,
             "stop_event": stop_event,
             "error_event": error_event,
-            "fps": 0.0, # Frames processed per second by the detector
+            "fps": 0.0,
             "start_time": time.time(),
-            "frames_processed": 0, # Total frames processed by the detector
-            "status": "starting", # Initial status
+            "frames_processed": 0,
+            "status": "starting",
             "error": None,
-            "manager_thread": None, # Will hold the main manager thread
+            "manager_thread": None,
             "puller_thread": None,
             "detector_thread": None,
             "pusher_thread": None,
-            "width": 0, # Stream properties, determined by puller
+            "width": 0,
             "height": 0,
             "input_fps": 0.0,
-            # Buffer for ANNOTATED frames for video saving
-            # Max length will be set in the detector thread based on input FPS
-            "frame_buffer": collections.deque(maxlen=1), # Start with small buffer, will be resized
-            "is_saving_video": False, # Flag to indicate if a video save is in progress
-            "save_video_thread_active": False # Flag to prevent starting multiple save threads
-            # Behavior-specific state will be added to this dictionary by the behavior handlers
+            "frame_buffer": collections.deque(maxlen=1),
+            "is_saving_video": False,
+            "save_video_thread_active": False
         }
 
-        # Start the main manager thread for this stream
+        # ...existing code for starting manager thread...
         manager_thread = threading.Thread(
             target=self._manage_pipeline,
             args=(code,),
-            daemon=True # Allow main program to exit even if threads are running
+            daemon=True
         )
         self.controls[code]["manager_thread"] = manager_thread
         manager_thread.start()
 
-        logger.info(f"[{code}] Manager thread started.")
-
-        # Return success immediately; status will update asynchronously
+        logger.info(f"[{code}] Manager thread started with model for behavior: {behavior_code}")
         return True, "Detection starting"
+
 
     def stop_detection(self, code):
         """
@@ -242,8 +265,9 @@ class VideoProcessor:
         control = self.controls.get(code)
         if not control:
              logger.error(f"[{code}] Manager started but control entry not found.")
-             return # Exit if control was somehow removed before manager starts
+             return
 
+        # ...existing code...
         stream_url = control["stream_url"]
         push_stream = control["push_stream"]
         push_stream_url = control["push_stream_url"]
@@ -251,27 +275,29 @@ class VideoProcessor:
         annotated_frame_queue = control["annotated_frame_queue"]
         stop_event = control["stop_event"]
         error_event = control["error_event"]
+        model = control["model"]  # 使用control专属的模型
 
         logger.info(f"[{code}] Pipeline manager started.")
-        control["status"] = "running" # Update initial status
+        control["status"] = "running"
 
-        # Start the sub-threads
+        # 传递模型给detector线程
         puller_thread = threading.Thread(
             target=self._pull_stream,
             args=(code, stream_url, frame_queue, stop_event, error_event, control),
-            daemon=True # Allow main program to exit
+            daemon=True
         )
         detector_thread = threading.Thread(
             target=self._detect_frames,
-            args=(code, frame_queue, annotated_frame_queue, stop_event, error_event, self.model, control),
-            daemon=True # Allow main program to exit
+            args=(code, frame_queue, annotated_frame_queue, stop_event, error_event, model, control),
+            daemon=True
         )
         pusher_thread = threading.Thread(
             target=self._push_stream,
             args=(code, annotated_frame_queue, push_stream, push_stream_url, stop_event, error_event, control),
-            daemon=True # Allow main program to exit
+            daemon=True
         )
 
+        # ...existing code for thread management...
         control["puller_thread"] = puller_thread
         control["detector_thread"] = detector_thread
         control["pusher_thread"] = pusher_thread
@@ -281,29 +307,27 @@ class VideoProcessor:
         if push_stream:
             pusher_thread.start()
 
-        logger.info(f"[{code}] Puller, Detector, Pusher threads started.")
+        logger.info(f"[{code}] Puller, Detector, Pusher threads started with behavior-specific model.")
 
-        # Monitor threads and events
+        # ...existing code for monitoring and cleanup...
         try:
             while not stop_event.is_set() and not error_event.is_set():
-                # Check if any of the sub-threads have died unexpectedly
                 if not puller_thread.is_alive():
                     logger.error(f"[{code}] Puller thread died unexpectedly.")
-                    error_event.set() # Signal error
+                    error_event.set()
                     control["error"] = control.get("error", "Puller thread died unexpectedly.")
                     break
                 if not detector_thread.is_alive():
                     logger.error(f"[{code}] Detector thread died unexpectedly.")
-                    error_event.set() # Signal error
+                    error_event.set()
                     control["error"] = control.get("error", "Detector thread died unexpectedly.")
                     break
                 if push_stream and not pusher_thread.is_alive():
                     logger.error(f"[{code}] Pusher thread died unexpectedly.")
-                    error_event.set() # Signal error
+                    error_event.set()
                     control["error"] = control.get("error", "Pusher thread died unexpectedly.")
                     break
 
-                # Check interval using configured value
                 time.sleep(MANAGER_CHECK_INTERVAL_SECONDS)
 
             logger.info(f"[{code}] Manager detected stop or error signal. Initiating shutdown.")
@@ -315,11 +339,8 @@ class VideoProcessor:
 
         finally:
             logger.info(f"[{code}] Manager initiating cleanup.")
-            # Ensure stop signal is set for all threads to exit their loops
             stop_event.set()
 
-            # Wait for sub-threads to finish (with timeout)
-            # Use configured timeout
             timeout = THREAD_JOIN_TIMEOUT_SECONDS
             puller_thread.join(timeout=timeout)
             if puller_thread.is_alive():
@@ -332,7 +353,6 @@ class VideoProcessor:
                 if pusher_thread.is_alive():
                     logger.warning(f"[{code}] Pusher thread did not join within timeout.")
 
-            # Final cleanup of control entry
             self._cleanup_control(code)
             logger.info(f"[{code}] Manager finished cleanup and exited.")
 
