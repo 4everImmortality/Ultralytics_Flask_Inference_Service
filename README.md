@@ -97,41 +97,6 @@ The Flask application exposes the following API endpoints:
 - `POST /api/control/cancel`: Stop a detection control instance by `code`. Requires a JSON request body with a `code` field.
 - `GET /health`: Health check endpoint, returns the application status and number of active detection pipelines.
 
-## Multithreading Design
-
-To enable concurrent processing of multiple video streams, the inference service employs a multithreading design. Each active video stream processing pipeline is handled by a set of dedicated threads that communicate via queues.
-
-The core threads include:
-
-1. **Manager Thread (`_manage_pipeline`)**:
-   - One Manager thread per video stream.
-   - Coordinates the processing pipeline for its stream.
-   - Responsible for starting and monitoring the `Puller`, `Detector`, and `Pusher` threads.
-   - Listens for stop events (`stop_event`) or error events (`error_event`) and coordinates the stopping of child threads and resource cleanup upon receiving a signal.
-2. **Puller Thread (`_pull_stream`)**:
-   - Responsible for continuously reading raw video frames from the specified video stream URL (RTSP, file, etc.).
-   - Uses an OpenCV `VideoCapture` object.
-   - Places the read frames into the `frame_queue` for the `Detector` thread to consume.
-   - Handles stream interruption and reconnection logic.
-3. **Detector Thread (`_detect_frames`)**:
-   - Retrieves raw video frames from the `frame_queue`.
-   - Performs object detection on the frames using the YOLO model.
-   - Passes the detection results and frames to the corresponding `Behavior Handler` for further analysis and processing.
-   - Places the frames, potentially with additional annotations from the behavior handler, into the `annotated_frame_queue` for the `Pusher` thread to consume.
-   - Triggers video saving logic (executed in a separate thread) based on signals from the behavior handler.
-4. **Pusher Thread (`_push_stream`)**:
-   - Retrieves annotated video frames from the `annotated_frame_queue`.
-   - Uses an FFmpeg subprocess to push these frames to the specified push stream URL (RTSP, RTMP, etc.).
-   - Writes the raw frame data to the FFmpeg process's standard input pipe.
-   - Monitors the FFmpeg process status and error output.
-
-**Inter-Thread Communication and Control:**
-
-- **Queues:** `frame_queue` and `annotated_frame_queue` are used for safely passing video frame data between different threads. Queue capacity limits help control memory usage and flow.
-- **Events:** `stop_event` is used to signal all threads to stop, and `error_event` is used to notify other threads to stop immediately if a critical error occurs in any thread. The Manager thread monitors these events to coordinate the lifecycle of the entire pipeline.
-
-This multithreading architecture allows the application to process video streams from multiple sources concurrently, improving the system's responsiveness and real-time capabilities.
-
 ## Behavior Modules
 
 Specific detection logic is implemented in behavior modules within the `inference_service/behaviors/` directory.
